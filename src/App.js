@@ -1,85 +1,48 @@
-import { useState, useRef } from "react";
-
-const POSITIONS = ["GK", "DEF", "MID", "ATK"];
-const POSITION_LABELS = { GK: "Goleiro", DEF: "Defensor", MID: "Meia", ATK: "Atacante" };
-const POSITION_COLORS = { GK: "#f59e0b", DEF: "#60a5fa", MID: "#34d399", ATK: "#f87171" };
-const POSITION_ICONS = { GK: "🧤", DEF: "🛡️", MID: "⚙️", ATK: "⚡" };
-
-const initialPlayers = [
-  { id: 1, name: "Carlos", position: "GK", skill: 8, elo: 1200, wins: 5, losses: 2 },
-  { id: 2, name: "Pedro", position: "DEF", skill: 7, elo: 1150, wins: 4, losses: 3 },
-  { id: 3, name: "Marcos", position: "DEF", skill: 6, elo: 1080, wins: 3, losses: 4 },
-  { id: 4, name: "Lucas", position: "MID", skill: 9, elo: 1320, wins: 8, losses: 1 },
-  { id: 5, name: "André", position: "MID", skill: 7, elo: 1170, wins: 5, losses: 3 },
-  { id: 6, name: "Rafael", position: "ATK", skill: 8, elo: 1250, wins: 6, losses: 2 },
-  { id: 7, name: "João", position: "ATK", skill: 6, elo: 1090, wins: 3, losses: 5 },
-  { id: 8, name: "Felipe", position: "GK", skill: 7, elo: 1130, wins: 4, losses: 4 },
-  { id: 9, name: "Bruno", position: "DEF", skill: 8, elo: 1220, wins: 6, losses: 2 },
-  { id: 10, name: "Thiago", position: "MID", skill: 5, elo: 1020, wins: 2, losses: 5 },
-];
-
-function eloRating(player) {
-  return Math.round(player.elo + (player.skill - 5) * 20);
-}
-
-function sortPlayers(players) {
-  return [...players].sort((a, b) => eloRating(b) - eloRating(a));
-}
-
-function distributeTeams(confirmed) {
-  const byPosition = {};
-  POSITIONS.forEach(p => { byPosition[p] = []; });
-  confirmed.forEach(p => byPosition[p.position].push(p));
-  const teamA = [], teamB = [];
-  POSITIONS.forEach(pos => {
-    const group = sortPlayers(byPosition[pos]);
-    for (let i = 0; i < group.length; i += 2) {
-      const pair = [group[i], group[i + 1]].filter(Boolean);
-      if (pair.length === 2) {
-        if (Math.random() < 0.5) { teamA.push(pair[0]); teamB.push(pair[1]); }
-        else { teamA.push(pair[1]); teamB.push(pair[0]); }
-      } else if (pair.length === 1) {
-        (teamA.length <= teamB.length ? teamA : teamB).push(pair[0]);
-      }
-    }
-  });
-  return { teamA, teamB };
-}
-
-function teamStrength(team) {
-  return team.reduce((sum, p) => sum + eloRating(p), 0);
-}
-
-function balanceTeams(teamA, teamB) {
-  let best = { teamA: [...teamA], teamB: [...teamB] };
-  let bestDiff = Math.abs(teamStrength(teamA) - teamStrength(teamB));
-  for (let iter = 0; iter < 200; iter++) {
-    const a = [...best.teamA], b = [...best.teamB];
-    const ia = Math.floor(Math.random() * a.length);
-    const candidates = b.filter(p => p.position === a[ia].position);
-    if (candidates.length === 0) continue;
-    const ib = b.indexOf(candidates[Math.floor(Math.random() * candidates.length)]);
-    [a[ia], b[ib]] = [b[ib], a[ia]];
-    const diff = Math.abs(teamStrength(a) - teamStrength(b));
-    if (diff < bestDiff) { bestDiff = diff; best = { teamA: a, teamB: b }; }
-  }
-  return best;
-}
+import { useState, useRef, useEffect } from "react";
+import {
+  POSITIONS,
+  POSITION_LABELS,
+  POSITION_COLORS,
+  POSITION_ICONS,
+  eloRating,
+  sortPlayers,
+  teamStrength,
+  distributeTeams,
+  balanceTeams,
+  applyMatchResult,
+} from "./lib/game";
+import { loadState, saveState } from "./lib/storage";
+import { initialPlayers } from "./data/initialPlayers";
 
 const VIEWS = { LIST: "list", DRAW: "draw", RESULT: "result", MANAGE: "manage", HISTORY: "history" };
 
+const persisted = loadState();
+const bootPlayers = persisted?.players ?? initialPlayers;
+const bootConfirmed = persisted
+  ? new Set(persisted.confirmedIds)
+  : new Set(initialPlayers.map(p => p.id));
+const bootHistory = persisted?.history ?? [];
+
 export default function App() {
-  const [players, setPlayers] = useState(initialPlayers);
-  const [confirmed, setConfirmed] = useState(new Set(initialPlayers.map(p => p.id)));
+  const [players, setPlayers] = useState(bootPlayers);
+  const [confirmed, setConfirmed] = useState(bootConfirmed);
   const [view, setView] = useState(VIEWS.LIST);
   const [teams, setTeams] = useState(null);
   const [animStep, setAnimStep] = useState(0);
   const [newPlayer, setNewPlayer] = useState({ name: "", position: "ATK", skill: 7 });
   const [editingId, setEditingId] = useState(null);
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState(bootHistory);
   const [showWinModal, setShowWinModal] = useState(false);
   const [winnerTeam, setWinnerTeam] = useState(null);
-  const nextId = useRef(players.length + 1);
+  const nextId = useRef((bootPlayers.reduce((m, p) => Math.max(m, p.id), 0) || 0) + 1);
+
+  useEffect(() => {
+    saveState({
+      players,
+      confirmedIds: Array.from(confirmed),
+      history,
+    });
+  }, [players, confirmed, history]);
 
   const toggleConfirm = (id) => {
     setConfirmed(prev => {
@@ -117,18 +80,7 @@ export default function App() {
     if (!winnerTeam || !teams) return;
     const winners = winnerTeam === "A" ? teams.teamA : teams.teamB;
     const losers = winnerTeam === "A" ? teams.teamB : teams.teamA;
-    const K = 32;
-    setPlayers(prev => prev.map(p => {
-      const isWinner = winners.some(w => w.id === p.id);
-      const isLoser = losers.some(l => l.id === p.id);
-      if (!isWinner && !isLoser) return p;
-      const avgOpponent = isWinner
-        ? losers.reduce((s, l) => s + eloRating(l), 0) / Math.max(losers.length, 1)
-        : winners.reduce((s, w) => s + eloRating(w), 0) / Math.max(winners.length, 1);
-      const expected = 1 / (1 + Math.pow(10, (avgOpponent - eloRating(p)) / 400));
-      const delta = Math.round(K * ((isWinner ? 1 : 0) - expected));
-      return { ...p, elo: Math.max(800, p.elo + delta), wins: p.wins + (isWinner ? 1 : 0), losses: p.losses + (isLoser ? 1 : 0) };
-    }));
+    setPlayers(prev => applyMatchResult(prev, winners, losers));
     setHistory(prev => [{
       date: new Date().toLocaleDateString("pt-BR"),
       teamA: teams.teamA.map(p => p.name),
